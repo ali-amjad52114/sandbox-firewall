@@ -11,7 +11,7 @@ const CORPUS = resolve(here, "..", "..", "..", "corpus");
 describe("loadCorpus", () => {
   it("finds the 9 runnable scenarios 01..09 with the right languages", () => {
     const scenarios = loadCorpus(CORPUS);
-    expect(scenarios.length).toBe(9);
+    expect(scenarios.length).toBe(13);
 
     const names = scenarios.map((s) => s.name).sort();
     expect(names).toEqual([
@@ -24,6 +24,10 @@ describe("loadCorpus", () => {
       "07-canary-in-output-php",
       "08-dns-exfil-python",
       "09-output-flood-python",
+      "11-payload-query-exfil-python",
+      "12-payload-body-exfil-node",
+      "13-dns-split-exfil-python",
+      "14-oversize-file-canary-python",
     ]);
 
     const lang = (n: string) => scenarios.find((s) => s.name === n)!.language;
@@ -48,7 +52,7 @@ describe("runEvals with the MockRunner", () => {
   it("returns 9 results and a table that reports the summary", async () => {
     const scenarios = loadCorpus(CORPUS);
     const results = await runEvals(new MockRunner(), scenarios);
-    expect(results.length).toBe(9);
+    expect(results.length).toBe(13);
     expect(formatTable(results)).toContain("passed");
   });
 

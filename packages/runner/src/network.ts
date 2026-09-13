@@ -28,7 +28,16 @@ export interface NetworkContext {
   allowHost(host: string): boolean;
   /** Called for every observed attempt. */
   onEvent(event: NetworkEvent): void;
+  /**
+   * Inspect bytes the guest is about to send outbound (an HTTP request line,
+   * headers and body, or any TCP payload). The runner scans this for canary
+   * secrets: a hostname allowlist says nothing about what rides in the body.
+   */
+  scanEgress?(text: string, where: string): void;
 }
+
+/** Per-socket egress accumulation, capped so a large upload cannot balloon memory. */
+const EGRESS_CAP = 256 * 1024;
 
 interface BridgeLike {
   id: number;
@@ -44,7 +53,7 @@ type CoreModule = { setWorkerUrl(url: string): void };
 export const FETCH_CHANNEL = "sandbox-firewall-fetch";
 export const FIREWALL_WORKER_URL = new URL("./firewall-worker.mjs", import.meta.url).href;
 
-const contexts = new Map<number, { ctx: NetworkContext; allowedIps: Set<string> }>();
+const contexts = new Map<number, { ctx: NetworkContext; allowedIps: Set<string>; egress: Map<number, string> }>();
 let exclusive: NetworkContext | undefined;
 let exclusiveExecuting = false;
 
@@ -83,6 +92,8 @@ export function ensureNetworkPatched(): Promise<BridgeModule> {
     const proto = mod.NodeNetworkBridge.prototype;
     const origResolve = proto.resolve as (this: BridgeLike, host: string) => Promise<string[]>;
     const origConnect = proto.connectTcp as (this: BridgeLike, local: string, peer: string) => Promise<object>;
+    const origWrite = proto.socketWrite as (this: BridgeLike, id: number, bytes: Uint8Array) => number;
+    const origClose = proto.socketClose as (this: BridgeLike, id: number) => void;
 
     proto.resolve = async function (this: BridgeLike, host: string): Promise<string[]> {
       const entry = contexts.get(this.id);
@@ -114,6 +125,28 @@ export function ensureNetworkPatched(): Promise<BridgeModule> {
       throw new NetworkBlockedError(address, "connect");
     };
 
+    // Egress payload inspection. `connectTcp` gates the destination; this gates
+    // the content. WASIX HTTP (Python urllib, PHP streams) writes the request
+    // line, headers and body through here, so it is where a secret placed in a
+    // path, query or body becomes visible to the canary scanner.
+    proto.socketWrite = function (this: BridgeLike, id: number, bytes: Uint8Array): number {
+      const entry = contexts.get(this.id);
+      if (entry?.ctx.scanEgress) {
+        const prev = entry.egress.get(id) ?? "";
+        if (prev.length < EGRESS_CAP) {
+          const chunk = Buffer.from(bytes).toString("latin1");
+          const combined = (prev + chunk).slice(0, EGRESS_CAP);
+          entry.egress.set(id, combined);
+          entry.ctx.scanEgress(combined, `socket:${id}`);
+        }
+      }
+      return origWrite.call(this, id, bytes);
+    };
+    proto.socketClose = function (this: BridgeLike, id: number): void {
+      contexts.get(this.id)?.egress.delete(id);
+      return origClose.call(this, id);
+    };
+
     installFetchChannel();
     await installWorkerAdapter();
     return mod;
@@ -126,8 +159,13 @@ function installFetchChannel(): void {
   fetchChannel = new BroadcastChannel(FETCH_CHANNEL);
   const debug = process.env.FIREWALL_DEBUG === "1" ? (...a: unknown[]) => console.error("[firewall-main]", ...a) : () => {};
   fetchChannel.onmessage = (event: unknown) => {
-    const m = (event as { data?: { type?: string; id?: string; host?: string; port?: number } }).data;
-    debug("channel message", JSON.stringify(m), "exclusive?", !!exclusive, "executing?", exclusiveExecuting);
+    const m = (event as { data?: { type?: string; id?: string; host?: string; port?: number; payload?: string } }).data;
+    debug("channel message", JSON.stringify({ ...m, payload: m?.payload ? `<${m.payload.length}b>` : undefined }), "exclusive?", !!exclusive, "executing?", exclusiveExecuting);
+    if (m && m.type === "egress") {
+      // A streaming request body, scanned by the worker's tee as it flowed out.
+      if (exclusive && m.payload && exclusive.scanEgress) exclusive.scanEgress(m.payload, `http-body:${m.host ?? "?"}`);
+      return;
+    }
     if (!m || m.type !== "check" || !m.id) return;
     const host = m.host ?? "(unknown)";
     let allowed = false;
@@ -138,6 +176,9 @@ function installFetchChannel(): void {
       allowed = exclusive.allowHost(host);
       reason = allowed ? "" : "host not allowed by policy";
       exclusive.onEvent({ kind: "connect", host, port: m.port, allowed, at: Date.now() });
+      // Scan the request itself: an allowed host says nothing about a secret
+      // hidden in the path, query string or POST body.
+      if (m.payload && exclusive.scanEgress) exclusive.scanEgress(m.payload, `http:${host}`);
     } else if (SDK_HOST.test(host)) {
       // No guest is executing on this path, so a wasmer.io fetch is the SDK
       // loading packages for a sandbox being created. Let it through.
@@ -185,7 +226,7 @@ export async function applyFirewallWorker(): Promise<void> {
 
 /** Register the policy for a bridge id. Returns an unregister function. */
 export function registerBridge(id: number, ctx: NetworkContext): () => void {
-  contexts.set(id, { ctx, allowedIps: new Set() });
+  contexts.set(id, { ctx, allowedIps: new Set(), egress: new Map() });
   return () => {
     contexts.delete(id);
   };

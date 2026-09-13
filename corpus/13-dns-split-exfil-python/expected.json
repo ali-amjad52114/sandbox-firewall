@@ -1,0 +1,7 @@
+{
+  "verdict": "blocked",
+  "mustContain": ["canary.leaked"],
+  "mustNotContain": ["network.blocked"],
+  "requiresNetwork": false,
+  "notes": "Canary split into sub-threshold DNS labels; caught by label reassembly. Hosts are recorded even when resolution fails, so no live network is needed."
+}

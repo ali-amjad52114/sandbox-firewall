@@ -1,0 +1,7 @@
+{
+  "verdict": "blocked",
+  "mustContain": ["canary.leaked"],
+  "mustNotContain": ["network.blocked"],
+  "requiresNetwork": true,
+  "notes": "Secret in a Node fetch POST body to an allowlisted host; caught by teeing the request body."
+}

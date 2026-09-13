@@ -82,20 +82,33 @@ The tool result has `isError: true` and starts with a line the agent cannot
 misread:
 
 ```
-BLOCKED by policy strict: canary AWS_SECRET_ACCESS_KEY observed in network (urlencoded)
+BLOCKED by policy strict: resolve exfil.attacker.example refused by policy strict
 Do not retry this action; it violates the sandbox policy. Tell the user what was attempted.
 --- stdout ---
-attempt failed: <urlopen error firewall: resolve exfil.attacker.example refused by policy>
+attempt failed: <urlopen error [Errno -2] Name does not resolve>
 --- stderr ---
 (empty)
 --- violations ---
-[critical] canary.leaked: canary AWS_SECRET_ACCESS_KEY observed in network (urlencoded)
 [high] network.blocked: resolve exfil.attacker.example refused by policy strict
 --- network ---
 resolve exfil.attacker.example BLOCKED
 --- fs ---
 (none)
 trace run_mfj2k1_8a7b6c5d
+```
+
+Exfil to a host the policy *allows* does not get a free pass either: the
+runner scans the bytes the guest sends (URL path, query string, POST body,
+and any TCP payload), so a canary hidden there trips a critical
+`canary.leaked` even though the host is on the allowlist:
+
+```
+BLOCKED by policy research: canary AWS_SECRET_ACCESS_KEY observed in http-body:example.com (raw)
+--- violations ---
+[critical] canary.leaked: canary AWS_SECRET_ACCESS_KEY observed in http-body:example.com (raw)
+--- network ---
+resolve example.com allowed
+connect example.com:80 allowed
 ```
 
 `structuredContent` carries the same facts as JSON: `traceId`, `verdict`,

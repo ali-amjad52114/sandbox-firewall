@@ -8,7 +8,26 @@
 
 export interface CanaryHit {
   name: string;
-  encoding: "raw" | "base64" | "base64url" | "hex" | "urlencoded";
+  encoding: "raw" | "base64" | "base64url" | "hex" | "urlencoded" | "base32";
+}
+
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/** RFC 4648 base32 without padding. The canonical DNS-label exfil encoding: DNS is case-insensitive and base32 has no +/= that are illegal in hostnames. */
+function base32(bytes: Buffer): string {
+  let bits = 0;
+  let value = 0;
+  let out = "";
+  for (const b of bytes) {
+    value = (value << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      out += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) out += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  return out;
 }
 
 function encodings(value: string): [CanaryHit["encoding"], string][] {
@@ -19,6 +38,7 @@ function encodings(value: string): [CanaryHit["encoding"], string][] {
     ["base64url", buf.toString("base64url")],
     ["hex", buf.toString("hex")],
     ["urlencoded", encodeURIComponent(value)],
+    ["base32", base32(buf)],
   ];
 }
 

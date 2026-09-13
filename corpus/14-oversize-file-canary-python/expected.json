@@ -1,0 +1,7 @@
+{
+  "verdict": "blocked",
+  "mustContain": ["canary.leaked"],
+  "mustNotContain": ["network.blocked", "fs.outside_writable"],
+  "requiresNetwork": false,
+  "notes": "Canary padded just past 1 MiB in a writable file; caught after raising the scan cap to 16 MiB."
+}

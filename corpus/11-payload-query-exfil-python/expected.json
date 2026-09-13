@@ -1,0 +1,7 @@
+{
+  "verdict": "blocked",
+  "mustContain": ["canary.leaked"],
+  "mustNotContain": ["network.blocked"],
+  "requiresNetwork": true,
+  "notes": "Secret in the URL query to an allowlisted host; caught by egress payload scanning."
+}

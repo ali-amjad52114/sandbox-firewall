@@ -89,10 +89,15 @@ async function installDispatcherGuard() {
         }
         const id = randomUUID();
         debug("dispatch", host, port, opts.path, "asking", id);
-        askVerdict(id, host, port).then((verdict) => {
+        askVerdict(id, host, port, requestPayload(opts)).then((verdict) => {
           debug("verdict", id, JSON.stringify(verdict));
           if (verdict.allowed) {
             try {
+              // The request line, headers and a string/Buffer body were scanned
+              // above. A streaming body (undici normalizes a fetch string body
+              // to an async iterable) is teed here so its bytes are scanned as
+              // they flow to the wire, catching a secret hidden in the body.
+              teeBody(opts, host);
               target.dispatch(opts, handler);
             } catch (err) {
               handler.onError?.(err);
@@ -111,10 +116,58 @@ async function installDispatcherGuard() {
   debug("undici dispatcher guarded");
 }
 
-function askVerdict(id, host, port) {
+const PAYLOAD_CAP = 64 * 1024;
+
+/** Build a scannable string from an undici request: line, headers, and a bounded body. */
+function requestPayload(opts) {
+  try {
+    const parts = [`${opts.method ?? "GET"} ${opts.path ?? "/"}`];
+    const h = opts.headers;
+    if (Array.isArray(h)) parts.push(h.join(" "));
+    else if (h && typeof h === "object") parts.push(Object.entries(h).map(([k, v]) => `${k}: ${v}`).join("\n"));
+    else if (typeof h === "string") parts.push(h);
+    const b = opts.body;
+    if (typeof b === "string") parts.push(b);
+    else if (b instanceof Uint8Array) parts.push(Buffer.from(b).toString("latin1"));
+    else if (Buffer.isBuffer?.(b)) parts.push(b.toString("latin1"));
+    // Streams and other body shapes are not read here (that would consume them);
+    // the WASIX socket path still scans those bytes on the wire.
+    return parts.join("\n").slice(0, PAYLOAD_CAP);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Replace a streaming request body with a passthrough that scans bytes as they flow. */
+function teeBody(opts, host) {
+  const body = opts.body;
+  if (!body || typeof body !== "object" || typeof body[Symbol.asyncIterator] !== "function") return;
+  let acc = "";
+  let capped = false;
+  async function* teed() {
+    try {
+      for await (const chunk of body) {
+        if (!capped) {
+          const t = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("latin1");
+          acc += t;
+          if (acc.length >= PAYLOAD_CAP) {
+            acc = acc.slice(0, PAYLOAD_CAP);
+            capped = true;
+          }
+        }
+        yield chunk;
+      }
+    } finally {
+      if (acc) channel.postMessage({ type: "egress", host, payload: acc, threadId });
+    }
+  }
+  opts.body = teed();
+}
+
+function askVerdict(id, host, port, payload) {
   return new Promise((resolve) => {
     pending.set(id, resolve);
-    channel.postMessage({ type: "check", id, host, port, threadId });
+    channel.postMessage({ type: "check", id, host, port, payload, threadId });
     const timer = setTimeout(() => {
       if (pending.has(id)) {
         pending.delete(id);

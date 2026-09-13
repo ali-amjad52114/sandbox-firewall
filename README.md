@@ -92,6 +92,11 @@ the sandbox needs the JSPI flag on the host, and Node refuses that flag in `NODE
 - **Limits**: `wallMs` is enforced by the SDK run timeout, `maxOutputBytes`
   by the SDK output cap; hitting either is a `limit.wall` / `limit.output`
   violation. `memoryMb` is recorded only (see Limits below).
+- **Egress payloads**: a hostname allowlist says nothing about what rides in
+  a request. The runner scans the bytes the guest sends out (URL path, query,
+  headers, POST body over Node fetch, and any WASIX socket write from Python
+  or PHP) for canary values, so a secret exfiltrated to an *allowed* host is a
+  critical `canary.leaked`, not a silent leak.
 - **Canaries**: the policy injects fake secrets as env vars
   (`AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY`, `DATABASE_URL`, with
   unmistakable values). If a canary value (raw, base64, base64url, hex,

@@ -86,15 +86,28 @@ Show the `run_code` tool result and read it aloud:
 ```
 verdict: BLOCKED
 violations:
-  - network.blocked  (high)      resolve collector.evil.test denied by policy strict
-  - canary.leaked    (critical)  OPENAI_API_KEY canary found in network payload
+  - network.blocked  (high)      resolve collector.evil.test refused by policy strict
 trace: run_xxxx  ->  http://localhost:4317/traces/run_xxxx
 ```
 
 Say: "The code ran to completion inside the sandbox. The SDK's network
 bridge lives on the host, so the guest asked us to resolve that host, we
-said no, and we saw the canary in what it tried to send. The agent gets a
-BLOCKED result and stops instead of retrying blind."
+said no, and the connection never happened. The agent gets a BLOCKED result
+and stops instead of retrying blind."
+
+Then the stronger point (optional second run, `policy: research`): exfil the
+same secret to an *allowlisted* host, in the URL or POST body:
+
+```
+verdict: BLOCKED
+violations:
+  - canary.leaked    (critical)  AWS_SECRET_ACCESS_KEY observed in http-body:example.com (raw)
+trace: run_yyyy
+```
+
+Say: "Even to a host the policy allows, the secret cannot leave. We scan the
+bytes the guest actually sends, so a canary in the path, query or body trips
+a critical leak. A hostname allowlist alone would miss this."
 
 ## Beat 4 (1:35-2:25) - the console
 

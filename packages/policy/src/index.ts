@@ -113,6 +113,9 @@ export function validate(p: Policy): void {
   if (p.network.mode === "allowlist" && !(p.network.allow ?? []).length)
     throw new PolicyError("network.mode allowlist requires at least one host (use '*' for any)");
   if (p.limits.wallMs > 10 * 60_000) throw new PolicyError("limits.wallMs above 10 minutes is not allowed");
+  for (const w of p.fs.writable ?? []) {
+    if (w.trim() === "") throw new PolicyError("fs.writable entries must be non-empty paths (an empty entry would open the whole workspace)");
+  }
   for (const [k, v] of Object.entries(p.canaries)) {
     if (v.length < 8) throw new PolicyError(`canary ${k} is too short to be detectable (min 8 chars)`);
   }
@@ -134,6 +137,9 @@ export function hostAllowed(p: Policy, host: string): boolean {
 export function pathWritable(p: Policy, absPath: string): boolean {
   const norm = absPath.startsWith("/") ? absPath : `/workspace/${absPath}`;
   return (p.fs.writable ?? []).some((rule) => {
+    // An empty rule would normalize to "/workspace/" and open the whole
+    // workspace (fail-open); validate() rejects it, and this is a backstop.
+    if (rule.trim() === "") return false;
     const r = rule === "/" ? "/" : rule.startsWith("/") ? rule : `/workspace/${rule}`;
     if (r === "/") return true;
     if (r.endsWith("/")) return norm.startsWith(r);
