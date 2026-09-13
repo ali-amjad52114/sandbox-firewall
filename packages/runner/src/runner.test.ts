@@ -142,7 +142,9 @@ describe("WasmerRunner Node guest host-fetch path", () => {
 
   it("refuses Node fetch under strict and records the attempt", async () => {
     const t = await runner.run(nodeReq(FETCH));
-    expect(t.stdout).toContain("firewall refused example.com");
+    // undici reports the refused dispatch as a plain TypeError("fetch failed")
+    // with our error as its cause; the guest only sees the outer message.
+    expect(t.stdout).toContain("fetch failed");
     expect(t.network).toEqual([expect.objectContaining({ kind: "connect", host: "example.com", port: 80, allowed: false })]);
     expect(t.verdict).toBe("blocked");
   }, 120_000);

@@ -6,5 +6,7 @@ export default defineConfig({
     hookTimeout: 120_000,
     pool: "forks",
     fileParallelism: false,
+    // The Node guest runtime inside Wasmer sandboxes needs JSPI on the host.
+    execArgv: ["--experimental-wasm-jspi"],
   },
 });
