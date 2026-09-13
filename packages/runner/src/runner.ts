@@ -1,4 +1,4 @@
-import { Wasmer, type Sandbox } from "@wasmer/sdk/node";
+import { Wasmer, type Sandbox, type WasmerOptions } from "@wasmer/sdk/node";
 import {
   deriveVerdict,
   LANGUAGE_PACKAGES,
@@ -14,7 +14,7 @@ import {
 import { hostAllowed, pathWritable, validate } from "@firewall/policy";
 import { findCanaries } from "./canary.js";
 import { diff, snapshot } from "./fsdiff.js";
-import { discoverBridgeIds, ensureNetworkPatched, registerBridge } from "./network.js";
+import { applyFirewallWorker, discoverBridgeIds, ensureNetworkPatched, registerBridge, setExclusiveContext, setExclusiveExecuting } from "./network.js";
 
 const RUNNER_VERSION = "0.1.0";
 
@@ -48,6 +48,49 @@ class ClientLease {
 let maxSeenBridgeId = 0;
 let clientInitChain: Promise<unknown> = Promise.resolve();
 
+/** Same SDK client, but every worker it spawns runs our fetch-wrapping entry first. */
+class FirewallWasmer extends Wasmer {
+  protected static async initializeCore(options: WasmerOptions) {
+    const client = await super.initializeCore(options);
+    await applyFirewallWorker();
+    return client;
+  }
+}
+
+/**
+ * Languages whose guest HTTP rides the host-fetch path. Those runs are
+ * exclusive so the worker pool's fetch questions attribute to exactly one
+ * trace. Python and PHP use WASIX sockets, which the bridge attributes
+ * per client, so they run concurrently.
+ */
+const HOST_FETCH_LANGUAGES: ReadonlySet<Language> = new Set(["node"]);
+
+/** Readers (socket-only runs) share; a writer (host-fetch run) runs alone. */
+class RunSlots {
+  private readers = 0;
+  private writer = false;
+  private queue: (() => void)[] = [];
+  async acquire(exclusive: boolean): Promise<void> {
+    for (;;) {
+      const free = exclusive ? !this.writer && this.readers === 0 : !this.writer;
+      if (free) {
+        if (exclusive) this.writer = true;
+        else this.readers++;
+        return;
+      }
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+  }
+  release(exclusive: boolean): void {
+    if (exclusive) this.writer = false;
+    else this.readers--;
+    const waiting = this.queue;
+    this.queue = [];
+    for (const wake of waiting) wake();
+  }
+}
+const slots = new RunSlots();
+
 export class WasmerRunner implements Runner {
   private pool: ClientLease[] = [];
   private waiters: (() => void)[] = [];
@@ -68,13 +111,15 @@ export class WasmerRunner implements Runner {
     const t0 = performance.now();
     const network: NetworkEvent[] = [];
     const violations: Violation[] = [];
+    const exclusive = HOST_FETCH_LANGUAGES.has(req.language);
+    await slots.acquire(exclusive);
     const lease = await this.acquire();
-    const unregister = lease.bridgeIds.map((id) =>
-      registerBridge(id, {
-        allowHost: (host) => hostAllowed(req.policy, host),
-        onEvent: (e) => network.push(e),
-      }),
-    );
+    const netContext = {
+      allowHost: (host: string) => hostAllowed(req.policy, host),
+      onEvent: (e: NetworkEvent) => network.push(e),
+    };
+    const unregister = lease.bridgeIds.map((id) => registerBridge(id, netContext));
+    if (exclusive) setExclusiveContext(netContext);
 
     let sandbox: Sandbox | undefined;
     let sandboxCreateMs = 0;
@@ -106,12 +151,14 @@ export class WasmerRunner implements Runner {
       const before = await snapshot(sandbox.fs);
       const args = useEntryFile ? [entry.file, ...(req.args ?? [])] : [...(req.args ?? [])];
       const te = performance.now();
+      if (exclusive) setExclusiveExecuting(true);
       const out = await sandbox.command(entry.command, args, { cwd: "/workspace" }).run({
         check: false,
         timeoutMs: req.policy.limits.wallMs,
         outputBytes: req.policy.limits.maxOutputBytes,
         stdin: req.stdin,
       });
+      if (exclusive) setExclusiveExecuting(false);
       execMs = performance.now() - te;
       stdout = out.stdout.text();
       stderr = out.stderr.text();
@@ -205,9 +252,11 @@ export class WasmerRunner implements Runner {
       });
       stderr = stderr || e.message;
     } finally {
+      if (exclusive) setExclusiveContext(undefined);
       for (const u of unregister) u();
       if (sandbox) await sandbox.close().catch(() => {});
       this.release(lease);
+      slots.release(exclusive);
     }
 
     const endedAt = Date.now();
@@ -276,7 +325,7 @@ export class WasmerRunner implements Runner {
     // Serialise client creation so bridge-id discovery is unambiguous.
     const next = clientInitChain.then(async () => {
       const mod = await ensureNetworkPatched();
-      const wasmer = new Wasmer({
+      const wasmer = new FirewallWasmer({
         cache: this.options.cacheDir ? { directory: this.options.cacheDir } : undefined,
       });
       // The bridge is created lazily on the first sandbox. Create and drop a

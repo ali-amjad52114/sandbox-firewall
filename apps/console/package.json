@@ -5,13 +5,16 @@
   "type": "module",
   "main": "./src/server.ts",
   "types": "./src/server.ts",
-  "exports": { ".": "./src/server.ts" },
+  "exports": {
+    ".": "./src/server.ts"
+  },
   "scripts": {
     "start": "tsx src/server.ts"
   },
   "dependencies": {
     "@firewall/contract": "*",
     "@firewall/policy": "*",
-    "@firewall/store": "*"
+    "@firewall/store": "*",
+    "@firewall/runner": "*"
   }
 }

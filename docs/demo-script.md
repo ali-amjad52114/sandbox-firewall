@@ -114,7 +114,7 @@ Say: "Every run is a Trace: request, policy, violations, network events,
 fs diff, timings. SQLite locally; the same store interface runs Postgres
 inside a Wasmer sandbox."
 
-## Beat 5 (2:25-3:00) - eval table and the bypasses slide
+## Beat 5 (2:25-3:00) - eval table and the bypasses slide (`corpus/BYPASSES.md`)
 
 Do, terminal 2:
 

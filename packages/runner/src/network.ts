@@ -1,13 +1,26 @@
 /**
  * Host-side network interception.
  *
- * The Node entrypoint of @wasmer/sdk backs every guest DNS lookup and TCP
- * connect with one `NodeNetworkBridge` per `Wasmer` client. Worker threads
- * dispatch straight to the bridge object (not through globals), so the only
- * reliable hook is the prototype. We patch `resolve`, `connectTcp` and
- * `listenTcp` once per process and route each call to the policy registered
- * for that bridge id. Unregistered bridges are denied: default deny.
+ * Two paths carry guest traffic out of a Wasmer sandbox on Node:
+ *
+ * 1. WASIX sockets. The Node entrypoint backs every guest DNS lookup and TCP
+ *    connect with one `NodeNetworkBridge` per `Wasmer` client. Worker threads
+ *    dispatch straight to the bridge object (not through globals), so the
+ *    reliable hook is the prototype. We patch `resolve`, `connectTcp` and
+ *    `listenTcp` once per process and route each call to the policy
+ *    registered for that bridge id. Unregistered bridges are denied.
+ *
+ * 2. Host fetch. The SDK serves some guest HTTP (the Node guest's `fetch`)
+ *    through the host's own `fetch` inside its worker threads. That never
+ *    touches the bridge, and the SDK's `network: { mode: "disabled" }` does
+ *    not gate it either. We point the SDK at our own worker entry
+ *    (firewall-worker.mjs) which wraps `fetch` and asks this module, over a
+ *    BroadcastChannel, whether the host is allowed. Workers are a
+ *    process-wide pool with no run identity, so runs that can use this path
+ *    hold an exclusive slot (see runner.ts) and the answer is attributed to
+ *    that one run. With no exclusive run active the answer is always no.
  */
+import { BroadcastChannel } from "node:worker_threads";
 import type { NetworkEvent } from "@firewall/contract";
 
 export interface NetworkContext {
@@ -26,20 +39,33 @@ type BridgeModule = {
   nodeNetworkBridge(id: number): BridgeLike;
 };
 
-const contexts = new Map<number, { ctx: NetworkContext; allowedIps: Set<string> }>();
-let patched: Promise<BridgeModule> | undefined;
+type CoreModule = { setWorkerUrl(url: string): void };
 
-async function loadBridgeModule(): Promise<BridgeModule> {
-  // The module is not in the package's "exports" map, so resolve the public
-  // node entrypoint and swap the file name. Both resolve to the same module
-  // instance the SDK itself uses, which is what makes the patch take effect.
-  const nodeEntry = import.meta.resolve("@wasmer/sdk/node");
-  const url = nodeEntry.replace(/node\.js$/, "node-network.js");
-  return (await import(url)) as BridgeModule;
+export const FETCH_CHANNEL = "sandbox-firewall-fetch";
+export const FIREWALL_WORKER_URL = new URL("./firewall-worker.mjs", import.meta.url).href;
+
+const contexts = new Map<number, { ctx: NetworkContext; allowedIps: Set<string> }>();
+let exclusive: NetworkContext | undefined;
+let exclusiveExecuting = false;
+
+/** Hosts the SDK itself talks to from its workers (registry queries, package downloads). */
+const SDK_HOST = /(^|\.)wasmer\.io$/i;
+let patched: Promise<BridgeModule> | undefined;
+let coreModule: Promise<CoreModule> | undefined;
+let fetchChannel: BroadcastChannel | undefined;
+
+function sdkFile(relative: string): string {
+  // Neither file is in the package's "exports" map, so resolve the public
+  // node entrypoint and swap the path. Both resolve to the same module
+  // instances the SDK itself uses, which is what makes the patches take.
+  return import.meta.resolve("@wasmer/sdk/node").replace(/dist\/node\.js$/, relative);
 }
 
 export class NetworkBlockedError extends Error {
-  constructor(public readonly host: string, public readonly kind: NetworkEvent["kind"]) {
+  constructor(
+    public readonly host: string,
+    public readonly kind: NetworkEvent["kind"],
+  ) {
     super(`firewall: ${kind} ${host} refused by policy`);
   }
 }
@@ -50,14 +76,13 @@ function stripPort(peer: string): { host: string; port?: number } {
   return { host: m[1], port: m[2] ? Number(m[2]) : undefined };
 }
 
-/** Install the interception once. Safe to call repeatedly. */
+/** Install the bridge interception and the fetch channel once. Safe to call repeatedly. */
 export function ensureNetworkPatched(): Promise<BridgeModule> {
   patched ??= (async () => {
-    const mod = await loadBridgeModule();
+    const mod = (await import(sdkFile("dist/node-network.js"))) as BridgeModule;
     const proto = mod.NodeNetworkBridge.prototype;
     const origResolve = proto.resolve as (this: BridgeLike, host: string) => Promise<string[]>;
     const origConnect = proto.connectTcp as (this: BridgeLike, local: string, peer: string) => Promise<object>;
-    const origListen = proto.listenTcp as (this: BridgeLike, address: string) => object;
 
     proto.resolve = async function (this: BridgeLike, host: string): Promise<string[]> {
       const entry = contexts.get(this.id);
@@ -88,9 +113,74 @@ export function ensureNetworkPatched(): Promise<BridgeModule> {
       entry?.ctx.onEvent({ kind: "connect", host: `listen ${address}`, allowed: false, at: Date.now() });
       throw new NetworkBlockedError(address, "connect");
     };
+
+    installFetchChannel();
+    await installWorkerAdapter();
     return mod;
   })();
   return patched;
+}
+
+function installFetchChannel(): void {
+  if (fetchChannel) return;
+  fetchChannel = new BroadcastChannel(FETCH_CHANNEL);
+  const debug = process.env.FIREWALL_DEBUG === "1" ? (...a: unknown[]) => console.error("[firewall-main]", ...a) : () => {};
+  fetchChannel.onmessage = (event: unknown) => {
+    const m = (event as { data?: { type?: string; id?: string; host?: string; port?: number } }).data;
+    debug("channel message", JSON.stringify(m), "exclusive?", !!exclusive, "executing?", exclusiveExecuting);
+    if (!m || m.type !== "check" || !m.id) return;
+    const host = m.host ?? "(unknown)";
+    let allowed = false;
+    let reason = "no sandbox owns host fetch right now";
+    if (exclusive && exclusiveExecuting) {
+      // Guest code is running in the one run that owns the host-fetch path:
+      // its policy decides, wasmer.io included.
+      allowed = exclusive.allowHost(host);
+      reason = allowed ? "" : "host not allowed by policy";
+      exclusive.onEvent({ kind: "connect", host, port: m.port, allowed, at: Date.now() });
+    } else if (SDK_HOST.test(host)) {
+      // No guest is executing on this path, so a wasmer.io fetch is the SDK
+      // loading packages for a sandbox being created. Let it through.
+      allowed = true;
+      reason = "";
+    } else {
+      for (const { ctx } of contexts.values()) ctx.onEvent({ kind: "connect", host, port: m.port, allowed: false, at: Date.now() });
+    }
+    debug("verdict", m.id, host, allowed, reason);
+    fetchChannel!.postMessage({ type: "verdict", id: m.id, allowed, reason });
+  };
+  fetchChannel.unref();
+}
+
+/**
+ * Route every SDK worker through our wrapper entry.
+ *
+ * The SDK spawns pool workers through `globalThis.Worker`, which it only
+ * installs (as its `NodeWorkerAdapter`) when nothing is there yet, and it
+ * spawns the first worker while the client is still initialising. So the
+ * URL override alone comes too late for that worker. Installing our own
+ * adapter subclass first, which swaps the URL in its constructor, catches
+ * every worker; the `setWorkerUrl` override is kept as a second layer.
+ */
+export async function installWorkerAdapter(): Promise<void> {
+  if (workerAdapterInstalled) return;
+  workerAdapterInstalled = true;
+  const { NodeWorkerAdapter } = (await import(sdkFile("dist/node-worker-adapter.js"))) as {
+    NodeWorkerAdapter: new (url: string | URL, options?: unknown) => object;
+  };
+  class FirewallWorkerAdapter extends NodeWorkerAdapter {
+    constructor(_url: string | URL, options?: unknown) {
+      super(FIREWALL_WORKER_URL, options);
+    }
+  }
+  Object.defineProperty(globalThis, "Worker", { configurable: true, value: FirewallWorkerAdapter });
+}
+let workerAdapterInstalled = false;
+
+/** Second layer: the SDK-side worker URL. Only valid once the SDK wasm is initialised. */
+export async function applyFirewallWorker(): Promise<void> {
+  coreModule ??= import(sdkFile("pkg/wasmer_sdk_js.js")) as Promise<CoreModule>;
+  (await coreModule).setWorkerUrl(FIREWALL_WORKER_URL);
 }
 
 /** Register the policy for a bridge id. Returns an unregister function. */
@@ -99,6 +189,17 @@ export function registerBridge(id: number, ctx: NetworkContext): () => void {
   return () => {
     contexts.delete(id);
   };
+}
+
+/** The one run allowed to use the host-fetch path right now. */
+export function setExclusiveContext(ctx: NetworkContext | undefined): void {
+  exclusive = ctx;
+  exclusiveExecuting = false;
+}
+
+/** Mark whether the exclusive run's guest program is currently executing. */
+export function setExclusiveExecuting(executing: boolean): void {
+  exclusiveExecuting = executing;
 }
 
 /**

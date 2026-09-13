@@ -131,3 +131,26 @@ describe("WasmerRunner (real sandboxes)", () => {
     expect(t.verdict).toBe("clean");
   });
 });
+
+describe("WasmerRunner Node guest host-fetch path", () => {
+  const runner = new WasmerRunner({ maxConcurrent: 2 });
+  afterAll(async () => {
+    await runner.close();
+  });
+  const nodeReq = (code: string, policy = preset("strict")): RunRequest => ({ id: newId("test"), language: "node", code, policy });
+  const FETCH = `fetch("http://example.com/").then(r => console.log("fetch status", r.status), e => console.log("fetch failed:", e.message)); setTimeout(() => {}, 1500);`;
+
+  it("refuses Node fetch under strict and records the attempt", async () => {
+    const t = await runner.run(nodeReq(FETCH));
+    expect(t.stdout).toContain("firewall refused example.com");
+    expect(t.network).toEqual([expect.objectContaining({ kind: "connect", host: "example.com", port: 80, allowed: false })]);
+    expect(t.verdict).toBe("blocked");
+  }, 120_000);
+
+  it.skipIf(!online)("allows Node fetch to an allowlisted host", async () => {
+    const t = await runner.run(nodeReq(FETCH, preset("research")));
+    expect(t.stdout).toContain("fetch status 200");
+    expect(t.network).toEqual([expect.objectContaining({ host: "example.com", allowed: true })]);
+    expect(t.verdict).toBe("clean");
+  }, 120_000);
+});

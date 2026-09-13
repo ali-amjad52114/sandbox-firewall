@@ -291,7 +291,7 @@ export async function createConsoleServer(opts: ConsoleOptions): Promise<Console
  *   CONSOLE_HOST   default 127.0.0.1
  *   CONSOLE_STORE  "sqlite" (default, path from CONSOLE_DB, default data/traces.db) or "memory" (seeded with sampleTraces())
  *   CONSOLE_SEED=1 seed sampleTraces() into whichever store
- *   CONSOLE_RUNNER "mock" attaches MockRunner so POST /api/run works; unset means 501
+ *   CONSOLE_RUNNER "wasmer" (default) attaches the real Wasmer runner so POST /api/run works; "mock" attaches MockRunner; "none" means 501
  */
 async function main(): Promise<void> {
   const { createStore } = await import("@firewall/store");
@@ -303,12 +303,18 @@ async function main(): Promise<void> {
   const seed = kind === "memory" || process.env.CONSOLE_SEED === "1";
   if (seed) for (const t of sampleTraces()) await store.put(t);
 
-  const runner: Runner | undefined = process.env.CONSOLE_RUNNER === "mock" ? new MockRunner() : undefined;
+  const runnerKind = process.env.CONSOLE_RUNNER ?? "wasmer";
+  let runner: Runner | undefined;
+  if (runnerKind === "mock") runner = new MockRunner();
+  else if (runnerKind === "wasmer") {
+    const { createRunner } = await import("@firewall/runner");
+    runner = createRunner();
+  }
 
   const app = await createConsoleServer({ store, runner, port, host: process.env.CONSOLE_HOST });
   console.error(
     `[console] listening on ${app.url} (store=${kind}${kind === "sqlite" ? ":" + storePath : ""}` +
-      `${seed ? ", seeded" : ""}, runner=${runner ? "mock" : "none"})`,
+      `${seed ? ", seeded" : ""}, runner=${runner ? runnerKind : "none"})`,
   );
   const shutdown = async () => {
     await app.close();
