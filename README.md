@@ -118,11 +118,13 @@ Being honest about what is and is not enforced:
   `--experimental-wasm-jspi`. Without it the sandbox fails to run.
 - The Node guest's `fetch` is served by the host's own `fetch` inside the
   SDK's worker threads, not by WASIX sockets, and the SDK's
-  `network: { mode: "disabled" }` does not gate it. The runner replaces the
-  SDK worker entry with `packages/runner/src/firewall-worker.mjs`, which
-  wraps `fetch` and asks the runner for a verdict. Because the worker pool
-  has no per-run identity, Node runs execute one at a time so every verdict
-  lands on exactly one trace. See `corpus/BYPASSES.md`.
+  `network: { mode: "disabled" }` does not gate it. The runner installs its
+  own `Worker` adapter so every SDK worker boots through
+  `packages/runner/src/firewall-worker.mjs`, which guards undici's global
+  dispatcher (the layer under `fetch`; the SDK reaches it without touching
+  `globalThis.fetch`) and asks the runner for a verdict. Because the worker
+  pool has no per-run identity, Node runs execute one at a time so every
+  verdict lands on exactly one trace. See `corpus/BYPASSES.md`.
 - The first sandbox in a process takes about 6 s to initialise the engine;
   subsequent sandboxes take about 2 ms. The console and eval CLI warm the
   engine on start.
@@ -136,8 +138,9 @@ Being honest about what is and is not enforced:
   and output limits.
 - `sandbox.fs` (`readDir`, `readFile`, `readText`) before and after the run
   to compute a content-hashed filesystem diff and scan written files.
-- Worker-side `fetch` interception through a custom `setWorkerUrl` entry so
-  host-served guest HTTP answers to the same policy.
+- Worker-side HTTP interception: a `Worker` adapter subclass boots every SDK
+  worker through a wrapper that guards undici's dispatcher, so host-served
+  guest HTTP answers to the same policy.
 - Host network bridge interception: wrapping `NodeNetworkBridge.resolve`,
   `connectTcp` and `listenTcp` so the policy decides every DNS lookup and
   TCP connect, and every decision becomes a trace event. One Wasmer client
