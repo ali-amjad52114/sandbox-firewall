@@ -5,3 +5,7 @@ dist/
 data/
 spike/
 .env
+
+# Stray non-project binaries
+*.pptx
+*.pdf
