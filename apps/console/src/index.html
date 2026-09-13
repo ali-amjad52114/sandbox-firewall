@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firewall Console</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --panel-2: #f0f1f4;
+    --line: #d9dce3;
+    --text: #15181e;
+    --muted: #5c6370;
+    --accent: #2f6fed;
+    --red: #d3382b;
+    --amber: #d08a00;
+    --green: #1f9d55;
+    --red-bg: rgba(211, 56, 43, 0.12);
+    --amber-bg: rgba(208, 138, 0, 0.14);
+    --green-bg: rgba(31, 157, 85, 0.13);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1e222b;
+      --line: #2a2f3a;
+      --text: #e6e8ee;
+      --muted: #8b93a3;
+      --accent: #6c9cff;
+      --red: #ff6b5e;
+      --amber: #f2b33d;
+      --green: #4cc98a;
+      --red-bg: rgba(255, 107, 94, 0.14);
+      --amber-bg: rgba(242, 179, 61, 0.14);
+      --green-bg: rgba(76, 201, 138, 0.14);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 var(--sans);
+    padding: 16px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 16px; margin: 0; letter-spacing: 0.02em; text-transform: uppercase; }
+  h2 { font-size: 13px; margin: 18px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  a { color: var(--accent); }
+  button, select, input, textarea {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 6px 8px;
+  }
+  button { cursor: pointer; background: var(--panel-2); }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  textarea { width: 100%; min-height: 120px; font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+  code, pre { font-family: var(--mono); font-size: 12px; }
+  pre {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin: 0;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+  }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .topbar .status { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); margin-right: 6px; vertical-align: middle; }
+  .dot.off { background: var(--muted); }
+  .dot.err { background: var(--red); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .tile {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left-width: 4px;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .tile .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .tile .value { font-size: 24px; font-weight: 600; font-family: var(--mono); margin-top: 2px; }
+  .tile .sub { font-size: 11px; color: var(--muted); }
+  .tile.total { border-left-color: var(--accent); }
+  .tile.blocked { border-left-color: var(--red); }
+  .tile.suspicious { border-left-color: var(--amber); }
+  .tile.clean { border-left-color: var(--green); }
+  .tile.timing { border-left-color: var(--muted); }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 8px; }
+  .filters label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .filters input[type="text"] { width: 160px; max-width: 100%; }
+
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+  .layout.has-detail { grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 1000px) {
+    .layout.has-detail { grid-template-columns: minmax(0, 1fr) minmax(380px, 480px); }
+  }
+
+  .list { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: top; }
+  th { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; background: var(--panel-2); position: sticky; top: 0; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--panel-2); }
+  tbody tr.selected { background: var(--panel-2); outline: 1px solid var(--accent); outline-offset: -1px; }
+  td.stripe { width: 4px; padding: 0; }
+  tr.v-blocked td.stripe { background: var(--red); }
+  tr.v-suspicious td.stripe { background: var(--amber); }
+  tr.v-clean td.stripe { background: var(--green); }
+  td.time { font-family: var(--mono); font-size: 12px; }
+  td.detail-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+  td.num { font-family: var(--mono); text-align: right; }
+  td.mono { font-family: var(--mono); font-size: 12px; }
+  .empty { padding: 24px; text-align: center; color: var(--muted); }
+
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid transparent;
+  }
+  .pill.blocked { background: var(--red-bg); color: var(--red); border-color: var(--red); }
+  .pill.suspicious { background: var(--amber-bg); color: var(--amber); border-color: var(--amber); }
+  .pill.clean { background: var(--green-bg); color: var(--green); border-color: var(--green); }
+  .badge { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+  .badge.critical, .badge.high { background: var(--red-bg); color: var(--red); }
+  .badge.medium { background: var(--amber-bg); color: var(--amber); }
+  .badge.low { background: var(--panel-2); color: var(--muted); }
+  .yes { color: var(--green); font-weight: 600; }
+  .no { color: var(--red); font-weight: 600; }
+
+  .detail {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px;
+    position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto;
+  }
+  @media (max-width: 999px) {
+    .detail { position: fixed; inset: 0; border-radius: 0; max-height: none; z-index: 10; padding: 14px 16px; }
+  }
+  .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .detail-head .id { font-family: var(--mono); font-size: 12px; color: var(--muted); word-break: break-all; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 12.5px; margin-top: 8px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; font-family: var(--mono); }
+  .detail table { min-width: 0; }
+  .detail th, .detail td { padding: 5px 8px; white-space: normal; word-break: break-all; }
+  .detail pre { max-height: 240px; }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  ul.violations { list-style: none; padding: 0; margin: 0; }
+  ul.violations li { padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; margin-bottom: 6px; background: var(--panel-2); }
+  ul.violations li .kind { font-family: var(--mono); font-size: 12px; }
+  ul.violations li .where { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+
+  .runform { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-top: 14px; }
+  .runform .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .notice { margin-top: 8px; padding: 8px 10px; border-radius: 4px; font-size: 13px; display: none; }
+  .notice.info { display: block; background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber); }
+  .notice.error { display: block; background: var(--red-bg); color: var(--red); border: 1px solid var(--red); }
+  .notice.ok { display: block; background: var(--green-bg); color: var(--green); border: 1px solid var(--green); }
+  .muted { color: var(--muted); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>Execution Firewall Console</h1>
+    <div class="status"><span id="live-dot" class="dot off"></span><span id="status-text">connecting</span></div>
+  </div>
+
+  <div class="tiles" id="tiles">
+    <div class="tile total"><div class="label">Total runs</div><div class="value" id="st-total">-</div><div class="sub"><span id="st-24h">-</span> in last 24h</div></div>
+    <div class="tile blocked"><div class="label">Blocked</div><div class="value" id="st-blocked">-</div><div class="sub">high / critical violations</div></div>
+    <div class="tile suspicious"><div class="label">Suspicious</div><div class="value" id="st-suspicious">-</div><div class="sub">low / medium violations</div></div>
+    <div class="tile clean"><div class="label">Clean</div><div class="value" id="st-clean">-</div><div class="sub">no violations</div></div>
+    <div class="tile timing"><div class="label">Avg sandbox create</div><div class="value" id="st-create">-</div><div class="sub">ms</div></div>
+    <div class="tile timing"><div class="label">Avg exec</div><div class="value" id="st-exec">-</div><div class="sub">ms</div></div>
+  </div>
+
+  <div class="filters">
+    <label>Verdict
+      <select id="f-verdict">
+        <option value="">all</option>
+        <option value="blocked">blocked</option>
+        <option value="suspicious">suspicious</option>
+        <option value="clean">clean</option>
+      </select>
+    </label>
+    <label>Agent <input type="text" id="f-agent" placeholder="exact name"></label>
+    <label>Limit
+      <select id="f-limit">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="250">250</option>
+      </select>
+    </label>
+    <button id="btn-refresh">Refresh</button>
+    <label><input type="checkbox" id="f-auto"> auto-refresh (3s)</label>
+  </div>
+
+  <div class="layout" id="layout">
+    <div>
+      <div class="list">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th></th>
+                <th>Time</th>
+                <th>Verdict</th>
+                <th>Lang</th>
+                <th>Agent / tool</th>
+                <th>Policy</th>
+                <th>Exit</th>
+                <th>Violations</th>
+                <th>Duration</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div class="empty hidden" id="empty">No traces match.</div>
+      </div>
+
+      <form class="runform" id="runform">
+        <h2 style="margin-top:0">Run something</h2>
+        <div class="row">
+          <label>Language
+            <select id="r-language">
+              <option value="python">python</option>
+              <option value="node">node</option>
+              <option value="php">php</option>
+            </select>
+          </label>
+          <label>Policy
+            <select id="r-policy">
+              <option value="strict">strict</option>
+              <option value="research">research</option>
+              <option value="permissive">permissive</option>
+            </select>
+          </label>
+          <button type="submit" class="primary" id="r-submit">Run in sandbox</button>
+        </div>
+        <textarea id="r-code" spellcheck="false" placeholder="print('hello from the sandbox')"></textarea>
+        <div class="notice" id="r-notice"></div>
+      </form>
+    </div>
+
+    <aside class="detail hidden" id="detail"></aside>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { rows: [], selected: null, timer: null, stale: false };
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function fmtTime(ms) {
+    if (!ms) return "-";
+    var d = new Date(ms);
+    var today = new Date();
+    var sameDay = d.toDateString() === today.toDateString();
+    var t = pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+    return sameDay ? t : (d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + t);
+  }
+  function fmtMs(x) {
+    if (x == null || isNaN(x)) return "-";
+    if (x >= 1000) return (x / 1000).toFixed(2) + " s";
+    return (Math.round(x * 10) / 10) + " ms";
+  }
+  function truncate(s, n) { s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n - 1) + "..." : s; }
+  function pill(v) { return '<span class="pill ' + esc(v) + '">' + esc(v) + '</span>'; }
+  function badge(sev) { return '<span class="badge ' + esc(sev) + '">' + esc(sev) + '</span>'; }
+  function allowed(b) { return b ? '<span class="yes">allowed</span>' : '<span class="no">denied</span>'; }
+
+  function setStatus(text, cls) {
+    $("status-text").textContent = text;
+    $("live-dot").className = "dot " + (cls || "");
+  }
+
+  async function getJson(url, opts) {
+    var res = await fetch(url, opts);
+    var body = null;
+    try { body = await res.json(); } catch (e) { body = null; }
+    return { status: res.status, body: body };
+  }
+
+  async function loadStats() {
+    var r = await getJson("/api/stats");
+    if (r.status !== 200 || !r.body) return;
+    var s = r.body;
+    $("st-total").textContent = s.total;
+    $("st-24h").textContent = s.last24h;
+    $("st-blocked").textContent = s.byVerdict.blocked || 0;
+    $("st-suspicious").textContent = s.byVerdict.suspicious || 0;
+    $("st-clean").textContent = s.byVerdict.clean || 0;
+    $("st-create").textContent = s.avgSandboxCreateMs.toFixed(2);
+    $("st-exec").textContent = s.avgExecMs.toFixed(1);
+  }
+
+  function queryString() {
+    var p = new URLSearchParams();
+    var v = $("f-verdict").value; if (v) p.set("verdict", v);
+    var a = $("f-agent").value.trim(); if (a) p.set("agent", a);
+    p.set("limit", $("f-limit").value);
+    var q = p.toString();
+    return q ? "?" + q : "";
+  }
+
+  async function loadTraces() {
+    var r = await getJson("/api/traces" + queryString());
+    if (r.status !== 200 || !Array.isArray(r.body)) { setStatus("error " + r.status, "err"); return; }
+    state.rows = r.body;
+    renderRows();
+    setStatus("updated " + fmtTime(Date.now()) + " / " + state.rows.length + " rows", "");
+  }
+
+  function renderRows() {
+    var tb = $("rows");
+    var html = "";
+    state.rows.forEach(function (t) {
+      var agent = t.agent ? esc(t.agent) + (t.tool ? ' <span class="muted">/ ' + esc(t.tool) + '</span>' : "") : '<span class="muted">-</span>';
+      var exit = (t.exitCode == null ? "-" : t.exitCode) + (t.exitReason && t.exitReason !== "exited" ? " (" + t.exitReason + ")" : "");
+      var viol = t.violationCount
+        ? '<strong>' + t.violationCount + '</strong> <span class="muted">' + esc(t.firstViolation ? t.firstViolation.kind : "") + '</span> ' + esc(truncate(t.firstViolation ? t.firstViolation.detail : "", 60))
+        : '<span class="muted">none</span>';
+      var dur = t.timings ? fmtMs(t.timings.totalMs) : fmtMs(t.endedAt - t.startedAt);
+      html += '<tr class="v-' + esc(t.verdict) + (state.selected === t.id ? " selected" : "") + '" data-id="' + esc(t.id) + '">' +
+        '<td class="stripe"></td>' +
+        '<td class="time" title="' + esc(t.id) + '">' + esc(fmtTime(t.startedAt)) + '</td>' +
+        '<td>' + pill(t.verdict) + '</td>' +
+        '<td class="mono">' + esc(t.language) + '</td>' +
+        '<td>' + agent + '</td>' +
+        '<td class="mono">' + esc(t.policy || "-") + '</td>' +
+        '<td class="mono">' + esc(exit) + '</td>' +
+        '<td class="detail-cell">' + viol + '</td>' +
+        '<td class="num">' + esc(dur) + '</td>' +
+        '</tr>';
+    });
+    tb.innerHTML = html;
+    $("empty").classList.toggle("hidden", state.rows.length > 0);
+  }
+
+  function table(headers, rows) {
+    if (!rows.length) return '<div class="muted">none</div>';
+    var h = '<div class="table-wrap"><table><thead><tr>' + headers.map(function (x) { return '<th>' + esc(x) + '</th>'; }).join("") + '</tr></thead><tbody>';
+    rows.forEach(function (r) { h += '<tr>' + r.map(function (c) { return '<td>' + c + '</td>'; }).join("") + '</tr>'; });
+    return h + '</tbody></table></div>';
+  }
+
+  function renderDetail(t) {
+    var el = $("detail");
+    var req = t.request || {};
+    var pol = req.policy || {};
+    var tm = t.timings || {};
+    var h = '<div class="detail-head"><div>' + pill(t.verdict) + ' <strong>' + esc(pol.name || "-") + '</strong> ' +
+      '<span class="muted">' + esc(req.language) + '</span></div><button type="button" id="detail-close">Close</button></div>' +
+      '<div class="id">' + esc(t.id) + '</div>' +
+      '<dl class="kv">' +
+      '<dt>Started</dt><dd>' + esc(new Date(t.startedAt).toISOString()) + '</dd>' +
+      '<dt>Agent</dt><dd>' + esc(req.agent ? req.agent.name + (req.agent.tool ? " / " + req.agent.tool : "") : "-") + '</dd>' +
+      '<dt>Exit</dt><dd>' + esc((t.exitCode == null ? "null" : t.exitCode) + " (" + t.exitReason + ")") + '</dd>' +
+      '<dt>Timings</dt><dd>create ' + esc(fmtMs(tm.sandboxCreateMs)) + ' / exec ' + esc(fmtMs(tm.execMs)) + ' / total ' + esc(fmtMs(tm.totalMs)) + '</dd>' +
+      '<dt>Network</dt><dd>' + esc(pol.network ? pol.network.mode + (pol.network.allow ? " [" + pol.network.allow.join(", ") + "]" : "") : "-") + '</dd>' +
+      '<dt>Writable</dt><dd>' + esc(pol.fs && pol.fs.writable && pol.fs.writable.length ? pol.fs.writable.join(", ") : "nothing") + '</dd>' +
+      '<dt>Runner</dt><dd>' + esc(t.runner ? t.runner.name + " " + t.runner.version : "-") + '</dd>' +
+      '</dl>';
+
+    h += '<h2>Code</h2><pre>' + esc(req.code || "") + '</pre>';
+    h += '<h2>stdout' + (t.outputTruncated ? ' <span class="badge medium">truncated</span>' : "") + '</h2><pre>' + (t.stdout ? esc(t.stdout) : '<span class="muted">(empty)</span>') + '</pre>';
+    h += '<h2>stderr</h2><pre>' + (t.stderr ? esc(t.stderr) : '<span class="muted">(empty)</span>') + '</pre>';
+
+    h += '<h2>Violations (' + (t.violations || []).length + ')</h2>';
+    if (t.violations && t.violations.length) {
+      h += '<ul class="violations">' + t.violations.map(function (v) {
+        return '<li>' + badge(v.severity) + ' <span class="kind">' + esc(v.kind) + '</span><div>' + esc(v.detail) + '</div>' +
+          '<div class="where">' + esc(fmtTime(v.at)) + (v.where ? " @ " + esc(v.where) : "") + '</div></li>';
+      }).join("") + '</ul>';
+    } else {
+      h += '<div class="muted">none</div>';
+    }
+
+    h += '<h2>Network events</h2>' + table(["kind", "host", "port", "allowed"], (t.network || []).map(function (e) {
+      return [esc(e.kind), esc(e.host), esc(e.port == null ? "-" : e.port), allowed(e.allowed)];
+    }));
+    h += '<h2>Filesystem changes</h2>' + table(["path", "op", "bytes", "allowed"], (t.fs || []).map(function (f) {
+      return [esc(f.path), esc(f.op), esc(f.bytes == null ? "-" : f.bytes), allowed(f.allowed)];
+    }));
+
+    h += '<h2>Raw trace</h2><details><summary>show JSON</summary><pre>' + esc(JSON.stringify(t, null, 2)) + '</pre></details>';
+    el.innerHTML = h;
+    el.classList.remove("hidden");
+    $("layout").classList.add("has-detail");
+    $("detail-close").addEventListener("click", closeDetail);
+  }
+
+  function closeDetail() {
+    state.selected = null;
+    $("detail").classList.add("hidden");
+    $("detail").innerHTML = "";
+    $("layout").classList.remove("has-detail");
+    renderRows();
+  }
+
+  async function openDetail(id) {
+    var r = await getJson("/api/traces/" + encodeURIComponent(id));
+    if (r.status !== 200 || !r.body) { setStatus("trace " + id + " not found", "err"); return; }
+    state.selected = id;
+    renderRows();
+    renderDetail(r.body);
+  }
+
+  async function refresh() {
+    try {
+      await Promise.all([loadStats(), loadTraces()]);
+    } catch (e) {
+      setStatus("offline", "err");
+    }
+  }
+
+  function setAuto(on) {
+    if (state.timer) { clearInterval(state.timer); state.timer = null; }
+    if (on) state.timer = setInterval(refresh, 3000);
+  }
+
+  function notice(text, cls) {
+    var n = $("r-notice");
+    n.className = "notice" + (cls ? " " + cls : "");
+    n.textContent = text || "";
+  }
+
+  async function runCode(ev) {
+    ev.preventDefault();
+    var code = $("r-code").value;
+    if (!code.trim()) { notice("Enter some code first.", "error"); return; }
+    var btn = $("r-submit");
+    btn.disabled = true; btn.textContent = "Running...";
+    notice("", "");
+    try {
+      var r = await getJson("/api/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ language: $("r-language").value, code: code, policy: $("r-policy").value }),
+      });
+      if (r.status === 501) {
+        notice("This console is read-only: no runner is attached, so code cannot be executed here. " + (r.body && r.body.error ? r.body.error : ""), "info");
+      } else if (r.status !== 200 || !r.body) {
+        notice("Run failed (" + r.status + "): " + (r.body && r.body.error ? r.body.error : "unknown error"), "error");
+      } else {
+        var t = r.body;
+        var existing = state.rows.filter(function (x) { return x.id !== t.id; });
+        var first = t.violations && t.violations[0];
+        state.rows = [{
+          id: t.id, verdict: t.verdict, language: t.request.language,
+          agent: t.request.agent ? t.request.agent.name : null, tool: t.request.agent ? t.request.agent.tool : null,
+          policy: t.request.policy ? t.request.policy.name : "", startedAt: t.startedAt, endedAt: t.endedAt,
+          exitCode: t.exitCode, exitReason: t.exitReason, violationCount: (t.violations || []).length,
+          firstViolation: first ? { kind: first.kind, severity: first.severity, detail: first.detail } : null,
+          timings: t.timings,
+        }].concat(existing);
+        state.selected = t.id;
+        renderRows();
+        renderDetail(t);
+        notice("Run " + t.id + " finished: " + t.verdict + ".", t.verdict === "clean" ? "ok" : (t.verdict === "blocked" ? "error" : "info"));
+        loadStats();
+      }
+    } catch (e) {
+      notice("Could not reach the server.", "error");
+    } finally {
+      btn.disabled = false; btn.textContent = "Run in sandbox";
+    }
+  }
+
+  $("rows").addEventListener("click", function (ev) {
+    var tr = ev.target.closest("tr[data-id]");
+    if (tr) openDetail(tr.getAttribute("data-id"));
+  });
+  $("btn-refresh").addEventListener("click", refresh);
+  $("f-verdict").addEventListener("change", loadTraces);
+  $("f-limit").addEventListener("change", loadTraces);
+  $("f-agent").addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); loadTraces(); } });
+  $("f-agent").addEventListener("change", loadTraces);
+  $("f-auto").addEventListener("change", function () { setAuto($("f-auto").checked); });
+  $("runform").addEventListener("submit", runCode);
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape" && state.selected) closeDetail(); });
+
+  refresh();
+})();
+</script>
+</body>
+</html>

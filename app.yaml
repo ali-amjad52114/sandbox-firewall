@@ -1,0 +1,158 @@
+# Wasmer Edge app config for the Sandbox Firewall console.
+#
+# Deploy with:   wasmer deploy            (from the repo root; reads this file)
+# Reference:     https://docs.wasmer.io/edge/configuration
+#                https://docs.wasmer.io/edge/configuration/jobs
+#                https://docs.wasmer.io/edge/learn/email
+#                https://docs.wasmer.io/edge/learn/databases
+#
+# Key names below are taken from those pages. Anything the docs do not pin
+# down is marked "UNVERIFIED" in a comment rather than guessed silently.
+
+# Constant schema identifier (required).
+kind: wasmer.io/App.v0
+
+# App name, must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ (required).
+name: sandbox-firewall-console
+
+# Wasmer username or namespace that owns the app (required). Replace before
+# deploying; `wasmer deploy` will also prompt for it interactively.
+owner: CHANGE-ME
+
+# Package to deploy. "." means "build the package in this directory" (the
+# convention `wasmer deploy` uses for local projects; it looks for a
+# wasmer.toml, or for a package.json when Anybuild autodetection is used).
+#
+# FALLBACK / Anybuild note: Wasmer's supported-frameworks page says JS
+# projects are auto-detected from framework configs and package.json
+# scripts (build/dev). This repo has no framework config and no `build`
+# script, so autodetection may pick nothing or pick `scripts.console`
+# instead of the command below. If that happens, add a wasmer.toml at the
+# root with a single command that runs apps/console/src/server.ts, or
+# publish the package (`wasmer publish`) and put its registry name here.
+package: .
+
+# Environment for the console process (and, by default, every job).
+env:
+  # Port the console binds. apps/console reads CONSOLE_PORT; 4317 is the
+  # local default. UNVERIFIED: Edge may hand the app a PORT variable
+  # instead - if the console does not come up, set CONSOLE_PORT from PORT
+  # in the server or bind whatever PORT says.
+  CONSOLE_PORT: "4317"
+  # Trace store backend. "sqlite" writes to the data/ volume below. The
+  # optional "pglite" backend (Postgres inside a Wasmer sandbox) or a
+  # managed database (capabilities.database) is not used here.
+  CONSOLE_STORE: sqlite
+  # NOTE: Node refuses --experimental-wasm-jspi inside NODE_OPTIONS, so the
+  # JSPI flag must be part of the command line (cli_args below). Only the
+  # tsx loader can go through NODE_OPTIONS.
+  NODE_OPTIONS: "--import tsx"
+
+# Arguments passed to the app's default command (assumed `node`). This is
+# the closest app.yaml form to:
+#   node --experimental-wasm-jspi --import tsx apps/console/src/server.ts
+# UNVERIFIED: the docs do not show a plain-Node (node:http) example, only
+# framework autodetection and the WinterCG js-worker. If the default
+# command is not `node`, move the flags into a wasmer.toml command instead.
+cli_args:
+  - --experimental-wasm-jspi
+  - apps/console/src/server.ts
+
+# Turn on the sendmail-compatible email capability (docs key: enable_email).
+# Requires a paid plan; quotas vary by plan. The binary is `sendmail`, from
+# the sendmail/sendmail registry package, and scripts/email-report.sh pipes
+# a message into `sendmail -t`.
+enable_email: true
+
+# Persistent storage. The SQLite trace DB and data/last-eval.md must survive
+# redeploys and be shared between the console and the two jobs, so they
+# live on a volume.
+# UNVERIFIED: the docs mount volumes at an absolute path (example: /data).
+# The eval command below writes the relative path data/last-eval.md, which
+# resolves against the app's working directory; if that is not the repo
+# root on Edge, change the mount to <workdir>/data or pass an absolute path
+# to --md and REPORT_PATH.
+volumes:
+  - name: data
+    mount: /data
+
+# Keep the console on the default multi-instance scaling; SQLite on a
+# shared volume is fine for a demo but not for concurrent writers. Set
+# scaling.mode: single_concurrency if writes collide.
+# scaling:
+#   mode: single_concurrency
+
+# Optional managed Postgres. Not enabled: the console uses SQLite. If you
+# switch CONSOLE_STORE to a Postgres backend, uncomment this block. Wasmer
+# injects exactly DB_HOST, DB_PORT, DB_NAME, DB_USERNAME, DB_PASSWORD
+# (no DATABASE_URL - build it yourself, with sslmode=require) and the app
+# must then be pinned to a single region.
+# capabilities:
+#   database:
+#     engine: postgres
+# locality:
+#   regions:
+#     - fr-roub1
+
+# Scheduled jobs (docs: /edge/configuration/jobs). trigger is a cron
+# expression (1-minute minimum), a duration ("15m"), or pre-/post-deployment.
+# action is either `execute` (run a package command) or `fetch` (HTTP call
+# into the app). Both jobs here use `execute` because they need a process,
+# not an HTTP endpoint.
+jobs:
+  # 1. Run the attack corpus against the real Wasmer runner every 15 minutes
+  #    and write the markdown pass table where the email job can find it.
+  - name: run-evals
+    trigger: "*/15 * * * *"
+    action:
+      execute:
+        # `command` omitted = the app's default workload command (docs).
+        # UNVERIFIED: that is assumed to be `node`; NODE_OPTIONS from the
+        # app env still applies (tsx loader); the JSPI flag is passed here.
+        # The literal command we want is:
+        #   npx tsx packages/evals/src/cli.ts --runner wasmer --offline --md data/last-eval.md
+        # `npx` is not a package command on Edge, so we hand the tsx entry
+        # to node directly (equivalent because --import tsx is set).
+        cli_args:
+          - --experimental-wasm-jspi
+          - packages/evals/src/cli.ts
+          - --runner
+          - wasmer
+          - --offline
+          - --md
+          - data/last-eval.md
+        env:
+          # Evals must never share the console's live SQLite file mid-run.
+          CONSOLE_STORE: sqlite
+        # Wall time for the whole corpus: first sandbox ~6 s to init the
+        # engine, then ~2 ms each, plus up to wallMs (10 s strict) per case.
+        timeout: 10m
+        retries: 1
+        # How late the platform may start the job before it counts as missed.
+        max_schedule_drift: 5m
+
+  # 2. Email the file produced by job 1. Offset by 5 minutes so it reads the
+  #    freshly written report rather than the previous one.
+  - name: email-eval-report
+    trigger: "5-59/15 * * * *"
+    action:
+      execute:
+        # Run under a real shell so the POSIX script works. The blog post's
+        # heartbeat example uses exactly this package/command pair.
+        package: wasmer/bash
+        command: bash
+        cli_args:
+          - -lc
+          - sh scripts/email-report.sh
+        env:
+          REPORT_PATH: data/last-eval.md
+          # Change both before deploying. Wasmer's docs do not state a
+          # required sender domain, so an app-owned address is safest.
+          REPORT_TO: ops@example.com
+          REPORT_FROM: firewall@example.com
+        # UNVERIFIED: whether `sendmail` is on PATH inside a job that runs
+        # under wasmer/bash. If it is not, add sendmail/sendmail as a
+        # dependency in wasmer.toml (the email docs put it there) so the
+        # binary is present in the app package.
+        timeout: 2m
+        retries: 2

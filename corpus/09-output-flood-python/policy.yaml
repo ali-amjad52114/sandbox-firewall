@@ -1,0 +1,4 @@
+name: output-flood-python
+extends: strict
+limits:
+  maxOutputBytes: 65536

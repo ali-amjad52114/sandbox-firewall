@@ -1,0 +1,9 @@
+{
+  "verdict": "clean",
+  "mustContain": [],
+  "mustNotContain": ["network.blocked", "canary.leaked", "fs.outside_writable", "limit.wall", "limit.output", "runtime.error"],
+  "mayContain": [],
+  "stdoutIncludes": ["rows="],
+  "requiresNetwork": false,
+  "notes": "Benign CSV analysis: reads the supplied data.csv, writes out/report.txt (allowed), no network. Should be clean."
+}

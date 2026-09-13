@@ -1,0 +1,2 @@
+name: malicious-postinstall-node
+extends: strict

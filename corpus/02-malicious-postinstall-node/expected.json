@@ -1,0 +1,8 @@
+{
+  "verdict": "blocked",
+  "mustContain": ["network.blocked", "fs.outside_writable"],
+  "mustNotContain": [],
+  "mayContain": ["canary.leaked", "runtime.error"],
+  "requiresNetwork": false,
+  "notes": "Node postinstall pattern: POST the whole env to a remote beacon (network blocked) and write .npmrc-backup at the workspace root (outside writable out/). Env dump may leak canaries."
+}

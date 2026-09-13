@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "sandbox-firewall": {
+      "command": "node",
+      "args": ["--experimental-wasm-jspi", "--import", "tsx", "packages/gateway/src/index.ts"],
+      "env": {
+        "FIREWALL_RUNNER": "wasmer",
+        "FIREWALL_STORE": "sqlite",
+        "FIREWALL_DB": "data/traces.db",
+        "FIREWALL_DEFAULT_POLICY": "strict"
+      }
+    }
+  }
+}

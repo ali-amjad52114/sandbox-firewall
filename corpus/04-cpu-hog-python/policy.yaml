@@ -1,0 +1,4 @@
+name: cpu-hog-python
+extends: strict
+limits:
+  wallMs: 3000

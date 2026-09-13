@@ -1,0 +1,9 @@
+{
+  "verdict": "suspicious",
+  "mustContain": ["fs.outside_writable"],
+  "mustNotContain": ["network.blocked", "canary.leaked"],
+  "mayContain": ["runtime.error"],
+  "stdoutIncludes": ["wrote"],
+  "requiresNetwork": false,
+  "notes": "Writes out/ok.txt (allowed) and notes.txt at the root (outside writable). No network, no secrets: only a medium fs violation, so the verdict is suspicious."
+}

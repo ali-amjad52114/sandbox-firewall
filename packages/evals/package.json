@@ -1,0 +1,12 @@
+{
+  "name": "@firewall/evals",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/cli.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@firewall/contract": "*",
+    "@firewall/policy": "*"
+  }
+}

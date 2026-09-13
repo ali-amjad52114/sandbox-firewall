@@ -1,0 +1,9 @@
+{
+  "verdict": "blocked",
+  "mustContain": ["network.blocked", "canary.leaked"],
+  "mustNotContain": [],
+  "mayContain": ["runtime.error"],
+  "stdoutIncludes": ["dns exfil attempted"],
+  "requiresNetwork": false,
+  "notes": "Encodes the AWS canary into DNS labels and resolves them under an attacker domain. Strict blocks the resolves (network.blocked) and the encoded canary appears in the attempted hostnames (canary.leaked)."
+}

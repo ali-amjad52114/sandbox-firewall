@@ -1,0 +1,8 @@
+{
+  "verdict": "blocked",
+  "mustContain": ["canary.leaked", "fs.outside_writable"],
+  "mustNotContain": ["network.blocked"],
+  "mayContain": ["runtime.error"],
+  "requiresNetwork": false,
+  "notes": "Prints the OPENAI_API_KEY canary to stdout and writes the DATABASE_URL canary to leak.txt at the root. Canary leak (critical) plus an fs escape; no network involved."
+}

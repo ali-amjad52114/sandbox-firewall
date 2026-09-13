@@ -1,0 +1,9 @@
+{
+  "verdict": "suspicious",
+  "mustContain": ["limit.wall"],
+  "mustNotContain": ["network.blocked", "canary.leaked"],
+  "mayContain": ["limit.output", "runtime.error"],
+  "exitReason": "timeout",
+  "requiresNetwork": false,
+  "notes": "Busy loop never exits; the 3s wall-clock limit terminates it (exitReason timeout, limit.wall). Only a medium violation, so suspicious."
+}

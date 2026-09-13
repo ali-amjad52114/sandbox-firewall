@@ -1,0 +1,9 @@
+{
+  "verdict": "clean",
+  "mustContain": [],
+  "mustNotContain": ["network.blocked", "canary.leaked", "fs.outside_writable"],
+  "mayContain": ["limit.output", "runtime.error"],
+  "stdoutIncludes": ["status 200"],
+  "requiresNetwork": true,
+  "notes": "GET http://example.com under research, which allowlists example.com. The connection is permitted, so no network.blocked and the verdict is clean. Requires network; skipped offline."
+}

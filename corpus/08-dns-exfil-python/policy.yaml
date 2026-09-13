@@ -1,0 +1,2 @@
+name: dns-exfil-python
+extends: strict

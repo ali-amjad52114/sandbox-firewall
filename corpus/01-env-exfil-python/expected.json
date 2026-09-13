@@ -1,0 +1,9 @@
+{
+  "verdict": "blocked",
+  "mustContain": ["network.blocked"],
+  "mustNotContain": [],
+  "mayContain": ["canary.leaked", "runtime.error"],
+  "stdoutIncludes": ["attempted exfil"],
+  "requiresNetwork": false,
+  "notes": "Reads the AWS canary and POSTs it to an attacker host over HTTP; strict blocks the network. The canary may leak into the attempted hostname/payload."
+}

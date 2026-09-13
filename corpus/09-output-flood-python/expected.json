@@ -1,0 +1,8 @@
+{
+  "verdict": "suspicious",
+  "mustContain": ["limit.output"],
+  "mustNotContain": ["network.blocked", "canary.leaked"],
+  "mayContain": ["limit.wall", "runtime.error"],
+  "requiresNetwork": false,
+  "notes": "Prints ~5 MB of output against a 64 KiB cap. Output is truncated (limit.output, low), so the verdict is suspicious."
+}

@@ -1,0 +1,2 @@
+name: env-exfil-python
+extends: strict
