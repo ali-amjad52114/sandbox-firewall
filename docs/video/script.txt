@@ -1,0 +1,15 @@
+This is the Execution Firewall Console. Sandbox Firewall is an execution firewall for AI agents, built on the Wasmer SDK. Every time an agent wants to run code, that run becomes a trace you can open.
+
+The product is one action. Paste the code. Choose Python, Node, or PHP. Choose a policy. Click Run in sandbox.
+
+Here is a clean run: print hello from the Wasmer sandbox. Verdict clean. The runner field says Wasmer. Network is off. Only the out directory is writable. stdout is the hello line. No violations.
+
+How Wasmer is used. We create a fresh sandbox with the Wasmer SDK. Guest packages for the language. The program lives under workspace. Policy environment and fake canary secrets go in. The first sandbox in a process takes about six seconds to start the engine. This run shows create six seconds, exec about one second. After that, creating a sandbox is under a millisecond.
+
+The guest never talks to the internet on its own. Wasmer's host network bridge lives on our side. We intercept every resolve and TCP connect. Strict policy can turn the network off, or allow a short list of hosts.
+
+Same console. A program that asks to resolve a collector host. Policy says no. The connection never happens. Verdict blocked. You see a high network.blocked violation, and a network event marked denied.
+
+Counts update live. Blocked, clean, average sandbox create, average exec. Attach the gateway as an MCP server and every run_code call takes this path.
+
+Sandbox first. Policy second. Evidence third. Wasmer is the isolation. The console is how you see it. One line of config to turn it on.
